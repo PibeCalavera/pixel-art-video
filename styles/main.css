@@ -279,6 +279,20 @@ input[type="range"] {
   font-size: 12px;
 }
 
+.video-preview {
+  display: block;
+  max-width: 100%;
+  max-height: 70vh;
+  width: auto;
+  height: auto;
+  background: #111;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+}
+
+.video-preview[hidden] {
+  display: none;
+}
+
 @media (max-width: 850px) {
   .app {
     padding: 14px;

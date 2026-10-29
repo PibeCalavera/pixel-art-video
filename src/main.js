@@ -2,11 +2,12 @@ import { createApp } from "./app/app.js";
 import { createControls } from "./ui/controls.js";
 import { createPreview } from "./ui/preview.js";
 import { createExporter } from "./ui/export.js";
+import { createVideoProcessor } from "./ui/video.js";
 import { getPaletteDefinitions } from "./processing/palette.js";
 import { ImageDataBuffer } from "./processing/image.js";
 import { resolveTargetSize } from "./processing/target-size.js";
 
-// Cache references to the primary application controls and preview elements.
+// Cache references to the primary image and video interface elements.
 const openImageButton = document.querySelector("#open-image-button");
 const imageInput = document.querySelector("#image-input");
 const processButton = document.querySelector("#process-button");
@@ -18,7 +19,15 @@ const previewCanvas = document.querySelector("#preview-canvas");
 const emptyPreview = document.querySelector("#empty-preview");
 const ditherStrengthValue = document.querySelector("#dither-strength-value");
 
-// Fail early if required elements are missing from the document.
+// Video-specific controls.
+const openVideoButton = document.querySelector("#open-video-button");
+const videoInput = document.querySelector("#video-input");
+const videoFrameCount = document.querySelector("#video-frame-count");
+const processVideoButton = document.querySelector("#process-video-button");
+const saveVideoButton = document.querySelector("#save-video-button");
+const videoPreview = document.querySelector("#video-preview");
+
+// Validate required elements before initializing the application.
 validateRequiredElement(openImageButton, "#open-image-button");
 validateRequiredElement(imageInput, "#image-input");
 validateRequiredElement(processButton, "#process-button");
@@ -29,7 +38,14 @@ validateRequiredElement(imageSizeElement, "#image-size");
 validateRequiredElement(previewCanvas, "#preview-canvas");
 validateRequiredElement(emptyPreview, "#empty-preview");
 
-// Initialize the UI controllers and the application state manager.
+validateRequiredElement(openVideoButton, "#open-video-button");
+validateRequiredElement(videoInput, "#video-input");
+validateRequiredElement(videoFrameCount, "#video-frame-count");
+validateRequiredElement(processVideoButton, "#process-video-button");
+validateRequiredElement(saveVideoButton, "#save-video-button");
+validateRequiredElement(videoPreview, "#video-preview");
+
+// Initialize the existing image-processing interface.
 const controls = createControls(document.body, {
   palettes: getPaletteDefinitions(),
 });
@@ -40,11 +56,24 @@ const exporter = createExporter(previewCanvas, { filename: "pixel-art.png" });
 
 const app = createApp();
 
-// Track pending real-time processing and the most recent processed image.
+// Track pending image processing and the most recent processed image.
 let realtimeTimer = null;
 let lastProcessedImage = null;
 
-// Register UI event handlers.
+// Track video processing and exported object URLs.
+let videoReady = false;
+let videoLoaded = false;
+let lastVideoUrl = null;
+
+// Initialize the video processor using the existing image-processing pipeline.
+const videoProcessor = createVideoProcessor({
+  app,
+  previewCanvas,
+  videoPreview,
+  getProcessingOptions: createProcessingOptions,
+});
+
+// Register image-related event handlers.
 openImageButton.addEventListener("click", handleOpenImage);
 imageInput.addEventListener("change", handleImageSelection);
 processButton.addEventListener("click", handleProcess);
@@ -52,34 +81,40 @@ saveButton.addEventListener("click", handleSave);
 discardButton.addEventListener("click", handleDiscard);
 
 controls.onChange(handleControlsChange);
+
+// Register video-related event handlers.
+openVideoButton.addEventListener("click", handleOpenVideo);
+videoInput.addEventListener("change", handleVideoSelection);
+processVideoButton.addEventListener("click", handleProcessVideo);
+saveVideoButton.addEventListener("click", handleSaveVideo);
+
+// Subscribe to application state changes and render the initial interface.
 app.subscribe(renderState);
 
-// Render the initial state and synchronize control labels.
 renderState(app.getState());
 updateDitherStrengthLabel();
 
 /**
- * Build the processing options from the current controls.
+ * Build normalized processing options from the current controls.
  *
- * When an original image is available, resolve the selected resize mode
- * into concrete output dimensions before passing options to the processor.
+ * When a source image is available, resolve the selected resize mode into
+ * concrete output dimensions before passing the options to the processor.
  *
- * @param {ImageDataBuffer | null} [original] - Source image to process.
+ * @param {ImageDataBuffer | null} [original] - Source image.
  * @returns {object} Normalized processing options.
- * @throws {Error} If a required palette has not been selected.
+ * @throws {Error} If no palette has been selected.
  */
 function createProcessingOptions(original = app.getState().image.original) {
   const options = controls.getOptions();
 
-  // Use a single palette consistently for quantization and dithering.
+  // Use one palette consistently for quantization and dithering.
   const paletteId = options.dither.palette ?? options.quantize.palette ?? null;
 
   if (!paletteId) {
     throw new Error("No palette selected.");
   }
 
-  // Resolve scale-based or exact resizing into concrete dimensions.
-  // Without a source image, preserve the dimensions supplied by the controls.
+  // Resolve scale-based and exact resizing when source dimensions are known.
   const targetSize = original
     ? resolveTargetSize(original.width, original.height, options.resize)
     : { width: options.resize.width, height: options.resize.height };
@@ -103,17 +138,21 @@ function createProcessingOptions(original = app.getState().image.original) {
 }
 
 /**
- * Open the native file picker.
+ * Open the image file picker.
  */
 function handleOpenImage() {
   imageInput.click();
 }
 
 /**
- * Synchronize processing settings with the application state.
- *
- * If real-time preview is enabled and an image is loaded, schedule
- * processing after a short debounce interval.
+ * Open the video file picker.
+ */
+function handleOpenVideo() {
+  videoInput.click();
+}
+
+/**
+ * Synchronize image-processing settings and schedule a real-time preview.
  */
 function handleControlsChange() {
   try {
@@ -123,7 +162,7 @@ function handleControlsChange() {
     app.updateProcessingOptions(options);
     updateDitherStrengthLabel();
 
-    if (controls.getRealtimePreview() && original) {
+    if (controls.getRealtimePreview() && original && !videoLoaded) {
       scheduleRealtimeProcessing();
     }
   } catch (error) {
@@ -134,7 +173,7 @@ function handleControlsChange() {
 }
 
 /**
- * Load the image selected by the user and display the original preview.
+ * Load an image selected by the user.
  *
  * @param {Event} event - File input change event.
  */
@@ -145,6 +184,16 @@ async function handleImageSelection(event) {
     return;
   }
 
+  // Return to image mode and invalidate any previous video result.
+  videoLoaded = false;
+  videoReady = false;
+  processVideoButton.disabled = true;
+  saveVideoButton.disabled = true;
+  videoPreview.pause();
+  videoPreview.hidden = true;
+  videoPreview.removeAttribute("src");
+  videoPreview.load();
+
   setStatus(`Loading ${file.name}...`);
 
   try {
@@ -152,7 +201,7 @@ async function handleImageSelection(event) {
 
     app.setOriginalImage(image);
 
-    // Discard the previous result when a new source image is loaded.
+    // Discard the previous processed image when a new source is loaded.
     lastProcessedImage = null;
 
     preview.render(image);
@@ -200,9 +249,7 @@ function handleProcess() {
 }
 
 /**
- * Export the most recently processed image.
- *
- * The exporter is responsible for encoding and saving the image.
+ * Save the most recently processed image.
  */
 async function handleSave() {
   if (!lastProcessedImage) {
@@ -221,7 +268,7 @@ async function handleSave() {
 }
 
 /**
- * Discard the current processed result and restore the original preview.
+ * Discard the current image result and restore the original preview.
  */
 function handleDiscard() {
   lastProcessedImage = null;
@@ -234,10 +281,7 @@ function handleDiscard() {
 }
 
 /**
- * Schedule real-time processing with a debounce to avoid excessive work.
- *
- * Repeated control changes reset the timer so processing starts after
- * the user pauses interaction.
+ * Schedule real-time image processing with a debounce.
  */
 function scheduleRealtimeProcessing() {
   if (realtimeTimer !== null) {
@@ -246,17 +290,167 @@ function scheduleRealtimeProcessing() {
 
   realtimeTimer = setTimeout(() => {
     realtimeTimer = null;
-
     handleProcess();
   }, 120);
 }
 
 /**
- * Update the interface to reflect the latest application state.
+ * Load a video selected by the user and display its metadata.
+ *
+ * @param {Event} event - File input change event.
+ */
+async function handleVideoSelection(event) {
+  const file = event.target.files?.[0];
+
+  if (!file) {
+    return;
+  }
+
+  videoLoaded = false;
+  videoReady = false;
+
+  processVideoButton.disabled = true;
+  saveVideoButton.disabled = true;
+
+  // Clear the previous exported video preview.
+  videoPreview.pause();
+  videoPreview.hidden = true;
+  videoPreview.removeAttribute("src");
+  videoPreview.load();
+
+  if (lastVideoUrl) {
+    URL.revokeObjectURL(lastVideoUrl);
+    lastVideoUrl = null;
+  }
+
+  setStatus(`Loading ${file.name}...`);
+
+  try {
+    const metadata = await videoProcessor.loadFile(file);
+
+    videoLoaded = true;
+
+    imageSizeElement.textContent = `${metadata.width} × ${metadata.height} · ${formatDuration(metadata.duration)}`;
+
+    emptyPreview.hidden = false;
+    previewCanvas.hidden = true;
+
+    setStatus(
+      `Loaded ${file.name}. Choose the output frame count and process the video.`,
+    );
+  } catch (error) {
+    console.error("[Pixel Art] Unable to load video:", error);
+
+    setStatus(error?.message ?? "Unable to load video.", true);
+  } finally {
+    videoInput.value = "";
+    processVideoButton.disabled = !videoLoaded;
+  }
+}
+
+/**
+ * Process a video using the requested number of sampled frames.
+ */
+async function handleProcessVideo() {
+  if (!videoLoaded) {
+    setStatus("Open a video before processing it.", true);
+    return;
+  }
+
+  const frameCount = Number(videoFrameCount.value);
+
+  if (!Number.isSafeInteger(frameCount) || frameCount < 1 || frameCount > 300) {
+    setStatus("Frame count must be an integer between 1 and 300.", true);
+    return;
+  }
+
+  processVideoButton.disabled = true;
+  saveVideoButton.disabled = true;
+  videoReady = false;
+
+  try {
+    setStatus(`Processing ${frameCount} video frames...`);
+
+    const result = await videoProcessor.process(frameCount);
+
+    videoReady = true;
+    saveVideoButton.disabled = false;
+
+    setStatus(
+      `Processed ${result.count} frames at ${result.width} × ${result.height}. Export when ready.`,
+    );
+  } catch (error) {
+    console.error("[Pixel Art] Unable to process video:", error);
+
+    setStatus(error?.message ?? "Unable to process video.", true);
+  } finally {
+    processVideoButton.disabled = !videoLoaded;
+  }
+}
+
+/**
+ * Export the processed video as a WebM file.
+ */
+async function handleSaveVideo() {
+  if (!videoReady) {
+    return;
+  }
+
+  saveVideoButton.disabled = true;
+
+  try {
+    setStatus("Exporting video...");
+
+    const blob = await videoProcessor.save();
+
+    if (!blob || blob.size === 0) {
+      throw new Error("The exported video is empty.");
+    }
+
+    if (lastVideoUrl) {
+      URL.revokeObjectURL(lastVideoUrl);
+    }
+
+    lastVideoUrl = URL.createObjectURL(blob);
+
+    videoPreview.src = lastVideoUrl;
+    videoPreview.hidden = false;
+    previewCanvas.hidden = true;
+
+    videoPreview.load();
+
+    // Trigger a download without navigating away from the application.
+    const link = document.createElement("a");
+    link.href = lastVideoUrl;
+    link.download = "pixel-art-video.webm";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+
+    setStatus("Video exported as WebM.");
+  } catch (error) {
+    console.error("[Pixel Art] Unable to export video:", error);
+
+    setStatus(error?.message ?? "Unable to export video.", true);
+  } finally {
+    saveVideoButton.disabled = !videoReady;
+  }
+}
+
+/**
+ * Render the latest application state in the image interface.
  *
  * @param {object} state - Current application state.
  */
 function renderState(state) {
+  // Do not let image-state updates replace the active video interface.
+  if (videoLoaded) {
+    processButton.disabled = true;
+    saveButton.disabled = true;
+    discardButton.disabled = true;
+    return;
+  }
+
   const original = state.image.original;
   const result = state.image.result;
 
@@ -288,7 +482,7 @@ function renderState(state) {
     imageSizeElement.textContent = "No image";
   }
 
-  // Keep the status message consistent with the processing lifecycle.
+  // Reflect the current processing lifecycle in the status message.
   switch (state.processing.status) {
     case "idle":
       if (original) {
@@ -314,7 +508,7 @@ function renderState(state) {
 }
 
 /**
- * Refresh the displayed dithering strength value.
+ * Update the displayed dithering strength.
  */
 function updateDitherStrengthLabel() {
   if (!ditherStrengthValue) {
@@ -329,12 +523,8 @@ function updateDitherStrengthLabel() {
 /**
  * Decode an image file into the application's internal image buffer.
  *
- * ImageBitmap is used for decoding, and the temporary bitmap is released
- * after its pixel data has been copied to an ImageDataBuffer.
- *
  * @param {File} file - Image file selected by the user.
- * @returns {Promise<ImageDataBuffer>} Decoded image data.
- * @throws {TypeError | Error} If the file or browser APIs are invalid.
+ * @returns {Promise<ImageDataBuffer>}
  */
 async function loadImageFile(file) {
   if (!(file instanceof File)) {
@@ -373,13 +563,25 @@ async function loadImageFile(file) {
 
     return ImageDataBuffer.fromImageData(imageData);
   } finally {
-    // Release bitmap resources even if pixel extraction fails.
     bitmap.close();
   }
 }
 
 /**
- * Display a status message and mark whether it represents an error.
+ * Format a duration as minutes and seconds.
+ *
+ * @param {number} seconds - Duration in seconds.
+ * @returns {string}
+ */
+function formatDuration(seconds) {
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = Math.floor(seconds % 60);
+
+  return `${minutes}:${String(remainingSeconds).padStart(2, "0")}`;
+}
+
+/**
+ * Display a status message and its error state.
  *
  * @param {string} message - Message to display.
  * @param {boolean} [isError=false] - Whether the message indicates an error.
@@ -394,7 +596,6 @@ function setStatus(message, isError = false) {
  *
  * @param {Element | null} element - Element returned by a DOM query.
  * @param {string} selector - Selector used to find the element.
- * @throws {Error} If the element cannot be found.
  */
 function validateRequiredElement(element, selector) {
   if (!element) {
