@@ -22,7 +22,7 @@ const ditherStrengthValue = document.querySelector("#dither-strength-value");
 // Video-specific controls.
 const openVideoButton = document.querySelector("#open-video-button");
 const videoInput = document.querySelector("#video-input");
-const videoFrameCount = document.querySelector("#video-frame-count");
+const videoFrameRate = document.querySelector("#video-frame-rate");
 const processVideoButton = document.querySelector("#process-video-button");
 const saveVideoButton = document.querySelector("#save-video-button");
 const videoPreview = document.querySelector("#video-preview");
@@ -40,7 +40,7 @@ validateRequiredElement(emptyPreview, "#empty-preview");
 
 validateRequiredElement(openVideoButton, "#open-video-button");
 validateRequiredElement(videoInput, "#video-input");
-validateRequiredElement(videoFrameCount, "#video-frame-count");
+validateRequiredElement(videoFrameRate, "#video-frame-rate");
 validateRequiredElement(processVideoButton, "#process-video-button");
 validateRequiredElement(saveVideoButton, "#save-video-button");
 validateRequiredElement(videoPreview, "#video-preview");
@@ -312,7 +312,6 @@ async function handleVideoSelection(event) {
   processVideoButton.disabled = true;
   saveVideoButton.disabled = true;
 
-  // Clear the previous exported video preview.
   videoPreview.pause();
   videoPreview.hidden = true;
   videoPreview.removeAttribute("src");
@@ -336,11 +335,10 @@ async function handleVideoSelection(event) {
     previewCanvas.hidden = true;
 
     setStatus(
-      `Loaded ${file.name}. Choose the output frame count and process the video.`,
+      `Loaded ${file.name}. Choose the output frame rate and process the video.`,
     );
   } catch (error) {
     console.error("[Pixel Art] Unable to load video:", error);
-
     setStatus(error?.message ?? "Unable to load video.", true);
   } finally {
     videoInput.value = "";
@@ -357,10 +355,10 @@ async function handleProcessVideo() {
     return;
   }
 
-  const frameCount = Number(videoFrameCount.value);
+  const frameRate = Number(videoFrameRate.value);
 
-  if (!Number.isSafeInteger(frameCount) || frameCount < 1 || frameCount > 300) {
-    setStatus("Frame count must be an integer between 1 and 300.", true);
+  if (!Number.isInteger(frameRate) || frameRate < 1 || frameRate > 60) {
+    setStatus("Frame rate must be an integer between 1 and 60 FPS.", true);
     return;
   }
 
@@ -369,19 +367,19 @@ async function handleProcessVideo() {
   videoReady = false;
 
   try {
-    setStatus(`Processing ${frameCount} video frames...`);
+    setStatus(`Processing video at ${frameRate} FPS...`);
 
-    const result = await videoProcessor.process(frameCount);
+    const result = await videoProcessor.process(frameRate);
 
     videoReady = true;
     saveVideoButton.disabled = false;
 
     setStatus(
-      `Processed ${result.count} frames at ${result.width} × ${result.height}. Export when ready.`,
+      `Processed ${result.count} frames at ${result.frameRate} FPS, ` +
+        `${result.width} × ${result.height}. Export when ready.`,
     );
   } catch (error) {
     console.error("[Pixel Art] Unable to process video:", error);
-
     setStatus(error?.message ?? "Unable to process video.", true);
   } finally {
     processVideoButton.disabled = !videoLoaded;

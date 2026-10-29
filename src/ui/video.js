@@ -1,8 +1,10 @@
 import { ImageDataBuffer } from "../processing/image.js";
 
-const MAX_FRAME_COUNT = 300;
+const MIN_FRAME_RATE = 1;
 const MAX_FRAME_RATE = 60;
+const MAX_FRAME_COUNT = 300;
 const SEEK_TOLERANCE_SECONDS = 0.001;
+
 const WEBM_MIME_TYPES = [
   "video/webm;codecs=vp9,opus",
   "video/webm;codecs=vp8,opus",
@@ -10,14 +12,13 @@ const WEBM_MIME_TYPES = [
 ];
 
 /**
- * Creates a video processor that reuses the application's image-processing
- * worker to process sampled video frames.
+ * Creates a video processor using the application's image-processing worker.
  *
  * @param {object} options
- * @param {object} options.app Application state and worker controller.
- * @param {HTMLCanvasElement} options.previewCanvas Image preview canvas.
- * @param {HTMLVideoElement} options.videoPreview Exported video player.
- * @param {Function} options.getProcessingOptions Resolves processing options.
+ * @param {object} options.app
+ * @param {HTMLCanvasElement} options.previewCanvas
+ * @param {HTMLVideoElement} options.videoPreview
+ * @param {Function} options.getProcessingOptions
  * @returns {{loadFile: Function, process: Function, save: Function, dispose: Function}}
  */
 export function createVideoProcessor({
@@ -45,7 +46,6 @@ export function createVideoProcessor({
   const sourceVideo = document.createElement("video");
   sourceVideo.preload = "auto";
   sourceVideo.playsInline = true;
-  sourceVideo.muted = false;
 
   const frameCanvas = document.createElement("canvas");
   const frameContext = frameCanvas.getContext("2d", {
@@ -63,6 +63,7 @@ export function createVideoProcessor({
   let outputUrl = null;
   let processedFrames = [];
   let sourceDuration = 0;
+  let processedFrameRate = 24;
   let isProcessing = false;
   let isSaving = false;
   let isDisposed = false;
@@ -103,9 +104,7 @@ export function createVideoProcessor({
         sourceVideo.videoWidth <= 0 ||
         sourceVideo.videoHeight <= 0
       ) {
-        throw new RangeError(
-          "The selected video has an invalid duration or dimensions.",
-        );
+        throw new RangeError("The video has invalid duration or dimensions.");
       }
 
       sourceDuration = sourceVideo.duration;
@@ -122,15 +121,16 @@ export function createVideoProcessor({
   }
 
   /**
-   * Samples the source video evenly and processes each frame sequentially.
+   * Processes the source video at the requested frame rate.
    *
-   * Sequential processing is required because the application controller
-   * uses one active worker request at a time.
+   * The total frame count is calculated from the source duration and FPS.
+   * Frames are processed sequentially because the application uses one
+   * active worker request at a time.
    *
-   * @param {number} frameCount Number of frames to process.
-   * @returns {Promise<{count: number, width: number, height: number}>}
+   * @param {number} frameRate Frames per second.
+   * @returns {Promise<{count: number, frameRate: number, width: number, height: number}>}
    */
-  async function process(frameCount) {
+  async function process(frameRate) {
     assertNotDisposed();
 
     if (isProcessing || isSaving) {
@@ -141,18 +141,30 @@ export function createVideoProcessor({
       throw new Error("Open a video before processing it.");
     }
 
-    validateFrameCount(frameCount, MAX_FRAME_COUNT);
+    validateFrameRate(frameRate);
+
+    const frameCount = Math.ceil(sourceDuration * frameRate);
+
+    if (frameCount > MAX_FRAME_COUNT) {
+      throw new RangeError(
+        `This video requires ${frameCount} frames at ${frameRate} FPS. ` +
+          `The maximum is ${MAX_FRAME_COUNT} frames. Choose a lower frame rate.`,
+      );
+    }
 
     isProcessing = true;
     processedFrames = [];
+    processedFrameRate = frameRate;
 
     try {
       frameCanvas.width = sourceVideo.videoWidth;
       frameCanvas.height = sourceVideo.videoHeight;
 
-      const timestamps = Array.from(
-        { length: frameCount },
-        (_, index) => ((index + 0.5) / frameCount) * sourceDuration,
+      const timestamps = Array.from({ length: frameCount }, (_, index) =>
+        Math.min(
+          (index + 0.5) / frameRate,
+          Math.max(0, sourceDuration - SEEK_TOLERANCE_SECONDS),
+        ),
       );
 
       processedFrames = await timestamps.reduce(
@@ -225,6 +237,7 @@ export function createVideoProcessor({
 
       return {
         count: processedFrames.length,
+        frameRate: processedFrameRate,
         width: firstFrame.width,
         height: firstFrame.height,
       };
@@ -234,10 +247,7 @@ export function createVideoProcessor({
   }
 
   /**
-   * Processes a frame through the existing application worker.
-   *
-   * The application notifies subscribers synchronously when a request starts.
-   * Only terminal success and error states settle this promise.
+   * Sends one frame through the existing image-processing worker.
    *
    * @param {ImageDataBuffer} frame
    * @param {object} options
@@ -290,10 +300,7 @@ export function createVideoProcessor({
                 new Uint8ClampedArray(result.data),
               ),
             );
-            return;
-          }
-
-          if (state.processing.status === "error") {
+          } else if (state.processing.status === "error") {
             settle(
               createOperationError(
                 "Frame processing failed",
@@ -313,10 +320,7 @@ export function createVideoProcessor({
   }
 
   /**
-   * Exports the processed frames as WebM using MediaRecorder.
-   *
-   * The canvas supplies the processed video frames. Source audio is included
-   * when the browser supports capturing the source video's audio track.
+   * Exports the processed frames as WebM.
    *
    * @returns {Promise<Blob>}
    */
@@ -332,13 +336,11 @@ export function createVideoProcessor({
     }
 
     if (typeof MediaRecorder === "undefined") {
-      throw new TypeError("Video export is not supported by this browser.");
+      throw new Error("Video export is not supported by this browser.");
     }
 
     if (typeof outputCanvas.captureStream !== "function") {
-      throw new TypeError(
-        "Canvas video capture is not supported by this browser.",
-      );
+      throw new Error("Canvas video capture is not supported by this browser.");
     }
 
     isSaving = true;
@@ -351,18 +353,14 @@ export function createVideoProcessor({
   }
 
   /**
-   * Records processed frames in sync with source playback.
+   * Records the processed canvas while the source video plays.
    *
    * @returns {Promise<Blob>}
    */
   function recordSourcePlayback() {
-    const frameRate = Math.min(
-      MAX_FRAME_RATE,
-      Math.max(1, processedFrames.length / sourceDuration),
-    );
-
-    const canvasStream = outputCanvas.captureStream(frameRate);
+    const canvasStream = outputCanvas.captureStream(processedFrameRate);
     const sourceCapture = getSourceCaptureStream();
+
     const tracks = [
       ...canvasStream.getVideoTracks(),
       ...(sourceCapture?.getAudioTracks() ?? []),
@@ -498,7 +496,7 @@ export function createVideoProcessor({
   }
 
   /**
-   * Gets the source media stream when the browser supports captureStream().
+   * Returns the source media stream when captureStream is supported.
    *
    * @returns {MediaStream | null}
    */
@@ -517,7 +515,7 @@ export function createVideoProcessor({
   }
 
   /**
-   * Draws an ImageDataBuffer to the output canvas.
+   * Draws a processed frame to the output canvas.
    *
    * @param {ImageDataBuffer} frame
    */
@@ -534,7 +532,7 @@ export function createVideoProcessor({
   }
 
   /**
-   * Releases the source video URL and resets the media element.
+   * Releases the source video's object URL.
    */
   function releaseSourceUrl() {
     sourceVideo.pause();
@@ -548,7 +546,7 @@ export function createVideoProcessor({
   }
 
   /**
-   * Releases resources when the processor is no longer needed.
+   * Releases processor resources.
    */
   function dispose() {
     if (isDisposed) {
@@ -568,7 +566,7 @@ export function createVideoProcessor({
   }
 
   /**
-   * Ensures the processor has not been disposed.
+   * Checks whether the processor has been disposed.
    */
   function assertNotDisposed() {
     if (isDisposed) {
@@ -578,7 +576,28 @@ export function createVideoProcessor({
 }
 
 /**
- * Returns the first WebM MIME type supported by MediaRecorder.
+ * Validates the requested frame rate.
+ *
+ * @param {number} frameRate
+ */
+function validateFrameRate(frameRate) {
+  if (!Number.isFinite(frameRate)) {
+    throw new TypeError("Frame rate must be a number.");
+  }
+
+  if (
+    !Number.isInteger(frameRate) ||
+    frameRate < MIN_FRAME_RATE ||
+    frameRate > MAX_FRAME_RATE
+  ) {
+    throw new RangeError(
+      `Frame rate must be an integer between ${MIN_FRAME_RATE} and ${MAX_FRAME_RATE} FPS.`,
+    );
+  }
+}
+
+/**
+ * Selects a supported WebM MIME type.
  *
  * @returns {string}
  */
@@ -598,7 +617,7 @@ function getSupportedMimeType() {
 }
 
 /**
- * Waits for video metadata or rejects if the media element reports an error.
+ * Waits for the video metadata to become available.
  *
  * @param {HTMLVideoElement} video
  * @returns {Promise<void>}
@@ -632,7 +651,7 @@ function waitForMetadata(video) {
 }
 
 /**
- * Seeks a video element to a timestamp and waits for the seek to finish.
+ * Seeks the video element to the requested timestamp.
  *
  * @param {HTMLVideoElement} video
  * @param {number} timestamp
@@ -677,7 +696,7 @@ function seekTo(video, timestamp) {
 }
 
 /**
- * Stops every track in a media stream, if a stream is available.
+ * Stops every track in a media stream.
  *
  * @param {MediaStream | null | undefined} stream
  */
@@ -692,23 +711,7 @@ function stopStreamTracks(stream) {
 }
 
 /**
- * Validates the requested number of video frames.
- *
- * @param {number} frameCount
- * @param {number} maximum
- */
-function validateFrameCount(frameCount, maximum) {
-  if (!Number.isSafeInteger(frameCount)) {
-    throw new TypeError("Frame count must be a safe integer.");
-  }
-
-  if (frameCount < 1 || frameCount > maximum) {
-    throw new RangeError(`Frame count must be between 1 and ${maximum}.`);
-  }
-}
-
-/**
- * Stops a MediaRecorder without propagating an invalid-state exception.
+ * Stops a MediaRecorder when it is active.
  *
  * @param {MediaRecorder} recorder
  */
@@ -720,12 +723,12 @@ function stopRecorder(recorder) {
   try {
     recorder.stop();
   } catch {
-    // The recorder may have become inactive between the state check and stop().
+    // The recorder may have become inactive before stop() was called.
   }
 }
 
 /**
- * Creates a readable description of an arbitrary error cause.
+ * Converts an arbitrary error cause into readable text.
  *
  * @param {unknown} cause
  * @returns {string}
@@ -758,26 +761,25 @@ function stringifyCause(cause) {
       return serialized;
     }
   } catch {
-    // Fall through when the cause cannot be serialized.
+    // Use a fallback for non-serializable values.
   }
 
   return Object.prototype.toString.call(cause);
 }
 
 /**
- * Wraps an operation error while retaining the original cause.
+ * Wraps an operation error while preserving its original cause.
  *
  * @param {string} operation
  * @param {unknown} cause
  * @returns {Error}
  */
 function createOperationError(operation, cause) {
-  const detail = stringifyCause(cause);
-  return new Error(`${operation}: ${detail}`, { cause });
+  return new Error(`${operation}: ${stringifyCause(cause)}`, { cause });
 }
 
 /**
- * Creates a descriptive error for media-element events.
+ * Creates a readable error for a media-element event.
  *
  * @param {string} operation
  * @param {Event | unknown} cause
