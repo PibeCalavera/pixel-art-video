@@ -336,11 +336,13 @@ export function createVideoProcessor({
     }
 
     if (typeof MediaRecorder === "undefined") {
-      throw new Error("Video export is not supported by this browser.");
+      throw new TypeError("Video export is not supported by this browser.");
     }
 
     if (typeof outputCanvas.captureStream !== "function") {
-      throw new Error("Canvas video capture is not supported by this browser.");
+      throw new TypeError(
+        "Canvas video capture is not supported by this browser.",
+      );
     }
 
     isSaving = true;

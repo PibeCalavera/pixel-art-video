@@ -16,7 +16,7 @@
     <link
       rel="icon"
       type="image/png"
-      href="public/favicon.png" />
+      href="/favicon.png" />
   </head>
 
   <body>
@@ -77,6 +77,7 @@
             <div class="field-row">
               <label class="field">
                 <span>Dimension mode</span>
+
                 <select data-control="resize-mode">
                   <option
                     value="scale"
@@ -91,6 +92,7 @@
                 class="field"
                 data-resize-scale-group>
                 <span>Scale</span>
+
                 <select data-control="resize-scale">
                   <option value="0.25">×0.25 (25%)</option>
                   <option value="0.5">×0.5 (50%)</option>
@@ -105,31 +107,33 @@
                   <option value="2">×2 (200%)</option>
                 </select>
               </label>
+            </div>
 
-              <div
-                class="field-row"
-                data-resize-exact-group
-                hidden>
-                <label class="field">
-                  <span>Width (px)</span>
-                  <input
-                    data-control="target-width"
-                    type="number"
-                    min="1"
-                    step="1"
-                    placeholder="Width" />
-                </label>
+            <div
+              class="field-row"
+              data-resize-exact-group
+              hidden>
+              <label class="field">
+                <span>Width (px)</span>
 
-                <label class="field">
-                  <span>Height (px)</span>
-                  <input
-                    data-control="target-height"
-                    type="number"
-                    min="1"
-                    step="1"
-                    placeholder="Height" />
-                </label>
-              </div>
+                <input
+                  data-control="target-width"
+                  type="number"
+                  min="1"
+                  step="1"
+                  placeholder="Width" />
+              </label>
+
+              <label class="field">
+                <span>Height (px)</span>
+
+                <input
+                  data-control="target-height"
+                  type="number"
+                  min="1"
+                  step="1"
+                  placeholder="Height" />
+              </label>
             </div>
           </div>
 
@@ -150,21 +154,17 @@
 
               <select data-control="dither-algorithm">
                 <option value="none">None</option>
-
                 <option value="bayer">Bayer</option>
-
                 <option value="floyd-steinberg">Floyd–Steinberg</option>
-
                 <option value="atkinson">Atkinson</option>
-
                 <option value="pair-dither">Pair Dither</option>
-
                 <option value="rgbk">Retro RGBK</option>
               </select>
             </label>
 
             <label class="field">
               <span>Matrix size</span>
+
               <select data-control="bayer-matrix-size">
                 <option value="2">2 × 2</option>
                 <option
@@ -230,6 +230,7 @@
 
             <label class="field">
               <span>Video output frame rate (FPS)</span>
+
               <input
                 id="video-frame-rate"
                 type="number"
@@ -255,13 +256,12 @@
             </button>
           </div>
 
-          <p
+          <output
             id="status"
             class="status"
-            role="status"
             aria-live="polite">
             Open an image to begin.
-          </p>
+          </output>
         </aside>
 
         <section class="preview-panel">
