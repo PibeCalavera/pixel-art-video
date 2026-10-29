@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0" />
+
+    <title>Pixel Art Converter</title>
+
+    <link
+      rel="stylesheet"
+      href="/styles/main.css" />
+
+    <link
+      rel="icon"
+      type="image/png"
+      href="public/favicon.png" />
+  </head>
+
+  <body>
+    <main class="app">
+      <header class="app-header">
+        <div>
+          <h1>Pixel Art Converter</h1>
+
+          <p>
+            A web-based image processing tool for creating pixel art references.
+          </p>
+        </div>
+
+        <div class="upload-control">
+          <button
+            id="open-image-button"
+            class="upload-button"
+            type="button">
+            Open image
+          </button>
+
+          <input
+            id="image-input"
+            type="file"
+            accept="image/png,image/jpeg,image/webp,image/gif"
+            hidden />
+        </div>
+      </header>
+
+      <section class="workspace">
+        <aside class="controls-panel">
+          <div class="panel-section">
+            <h2>Resize</h2>
+
+            <label class="field">
+              <span>Algorithm</span>
+
+              <select data-control="resize-algorithm">
+                <option value="nearest">Nearest Neighbor</option>
+                <option value="bilinear">Bilinear</option>
+                <option value="lanczos">Lanczos</option>
+              </select>
+            </label>
+
+            <div class="field-row">
+              <label class="field">
+                <span>Dimension mode</span>
+                <select data-control="resize-mode">
+                  <option
+                    value="scale"
+                    selected>
+                    Scale multiplier
+                  </option>
+                  <option value="exact">Exact dimensions</option>
+                </select>
+              </label>
+
+              <label
+                class="field"
+                data-resize-scale-group>
+                <span>Scale</span>
+                <select data-control="resize-scale">
+                  <option value="0.25">×0.25 (25%)</option>
+                  <option value="0.5">×0.5 (50%)</option>
+                  <option value="0.75">×0.75 (75%)</option>
+                  <option
+                    value="1"
+                    selected>
+                    ×1 (Original size)
+                  </option>
+                  <option value="1.25">×1.25 (125%)</option>
+                  <option value="1.5">×1.5 (150%)</option>
+                  <option value="2">×2 (200%)</option>
+                </select>
+              </label>
+
+              <div
+                class="field-row"
+                data-resize-exact-group
+                hidden>
+                <label class="field">
+                  <span>Width (px)</span>
+                  <input
+                    data-control="target-width"
+                    type="number"
+                    min="1"
+                    step="1"
+                    placeholder="Width" />
+                </label>
+
+                <label class="field">
+                  <span>Height (px)</span>
+                  <input
+                    data-control="target-height"
+                    type="number"
+                    min="1"
+                    step="1"
+                    placeholder="Height" />
+                </label>
+              </div>
+            </div>
+          </div>
+
+          <div class="panel-section">
+            <h2>Palette</h2>
+
+            <label class="field">
+              <span>Color palette</span>
+              <select data-control="palette"></select>
+            </label>
+          </div>
+
+          <div class="panel-section">
+            <h2>Dithering</h2>
+
+            <label class="field">
+              <span>Algorithm</span>
+
+              <select data-control="dither-algorithm">
+                <option value="none">None</option>
+
+                <option value="bayer">Bayer</option>
+
+                <option value="floyd-steinberg">Floyd–Steinberg</option>
+
+                <option value="atkinson">Atkinson</option>
+
+                <option value="pair-dither">Pair Dither</option>
+
+                <option value="rgbk">Retro RGBK</option>
+              </select>
+            </label>
+
+            <label class="field">
+              <span>Matrix size</span>
+              <select data-control="bayer-matrix-size">
+                <option value="2">2 × 2</option>
+                <option
+                  value="4"
+                  selected>
+                  4 × 4
+                </option>
+                <option value="8">8 × 8</option>
+              </select>
+            </label>
+
+            <label class="field">
+              <span>
+                Strength
+                <output id="dither-strength-value">1</output>
+              </span>
+
+              <input
+                data-control="dither-strength"
+                type="range"
+                min="0"
+                max="1"
+                step="0.05"
+                value="1" />
+            </label>
+          </div>
+
+          <div class="panel-section">
+            <h2>Preview</h2>
+
+            <label class="checkbox-field">
+              <input
+                data-control="realtime-preview"
+                type="checkbox"
+                checked />
+
+              <span>Realtime preview</span>
+            </label>
+          </div>
+
+          <div class="panel-actions">
+            <button
+              id="process-button"
+              class="primary-button"
+              type="button"
+              disabled>
+              Process image
+            </button>
+
+            <button
+              id="save-button"
+              type="button"
+              disabled>
+              Save PNG
+            </button>
+
+            <button
+              id="discard-button"
+              type="button"
+              disabled>
+              Discard result
+            </button>
+          </div>
+
+          <p
+            id="status"
+            class="status"
+            role="status"
+            aria-live="polite">
+            Open an image to begin.
+          </p>
+        </aside>
+
+        <section class="preview-panel">
+          <div class="preview-header">
+            <h2>Preview</h2>
+
+            <span
+              id="image-size"
+              class="image-size">
+              No image
+            </span>
+          </div>
+
+          <div
+            id="preview-container"
+            class="preview-container">
+            <div
+              id="empty-preview"
+              class="empty-preview">
+              <p>No image loaded.</p>
+
+              <span>Choose an image to see it here.</span>
+            </div>
+
+            <canvas
+              id="preview-canvas"
+              hidden></canvas>
+          </div>
+        </section>
+      </section>
+    </main>
+
+    <script
+      type="module"
+      src="/src/main.js"></script>
+  </body>
+</html>
