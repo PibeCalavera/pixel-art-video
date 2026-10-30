@@ -1,4 +1,5 @@
 import { ImageDataBuffer } from "../processing/image.js";
+import { fixWebmDuration } from "@fix-webm-duration/fix";
 
 const MIN_FRAME_RATE = 1;
 const MAX_FRAME_RATE = 60;
@@ -16,27 +17,12 @@ const WEBM_MIME_TYPES = [
  *
  * @param {object} options
  * @param {object} options.app
- * @param {HTMLCanvasElement} options.previewCanvas
- * @param {HTMLVideoElement} options.videoPreview
  * @param {Function} options.getProcessingOptions
- * @returns {{loadFile: Function, process: Function, save: Function, dispose: Function}}
+ * @returns {{loadFile: Function, process: Function, save: Function, invalidate: Function, dispose: Function}}
  */
-export function createVideoProcessor({
-  app,
-  previewCanvas,
-  videoPreview,
-  getProcessingOptions,
-}) {
+export function createVideoProcessor({ app, getProcessingOptions }) {
   if (!app || typeof app.subscribe !== "function") {
     throw new TypeError("A valid application controller is required.");
-  }
-
-  if (!(previewCanvas instanceof HTMLCanvasElement)) {
-    throw new TypeError("previewCanvas must be an HTMLCanvasElement.");
-  }
-
-  if (!(videoPreview instanceof HTMLVideoElement)) {
-    throw new TypeError("videoPreview must be an HTMLVideoElement.");
   }
 
   if (typeof getProcessingOptions !== "function") {
@@ -46,6 +32,7 @@ export function createVideoProcessor({
   const sourceVideo = document.createElement("video");
   sourceVideo.preload = "auto";
   sourceVideo.playsInline = true;
+  sourceVideo.muted = true;
 
   const frameCanvas = document.createElement("canvas");
   const frameContext = frameCanvas.getContext("2d", {
@@ -60,15 +47,21 @@ export function createVideoProcessor({
   }
 
   let sourceUrl = null;
-  let outputUrl = null;
   let processedFrames = [];
+  let previewBlob = null;
   let sourceDuration = 0;
   let processedFrameRate = 24;
   let isProcessing = false;
   let isSaving = false;
   let isDisposed = false;
+  let operationVersion = 0;
 
-  return { loadFile, process, save, dispose };
+  let audioVideo = null;
+  let audioContext = null;
+  let audioSourceNode = null;
+  let audioDestination = null;
+
+  return { loadFile, process, save, invalidate, dispose };
 
   /**
    * Loads a local video file and waits for its metadata.
@@ -87,12 +80,15 @@ export function createVideoProcessor({
       throw new Error("Cannot load a video while another operation is active.");
     }
 
+    invalidate();
     releaseSourceUrl();
-    processedFrames = [];
+    releaseAudioVideo();
+
     sourceDuration = 0;
 
     sourceUrl = URL.createObjectURL(file);
     sourceVideo.src = sourceUrl;
+    sourceVideo.load();
 
     try {
       await waitForMetadata(sourceVideo);
@@ -109,6 +105,18 @@ export function createVideoProcessor({
 
       sourceDuration = sourceVideo.duration;
 
+      // Create an independent video element for audio playback.
+      audioVideo = document.createElement("video");
+      audioVideo.preload = "auto";
+      audioVideo.playsInline = true;
+      audioVideo.muted = false;
+      audioVideo.volume = 1;
+      audioVideo.src = sourceUrl;
+      audioVideo.load();
+
+      await waitForMetadata(audioVideo);
+      assertNotDisposed();
+
       return {
         width: sourceVideo.videoWidth,
         height: sourceVideo.videoHeight,
@@ -116,19 +124,17 @@ export function createVideoProcessor({
       };
     } catch (error) {
       releaseSourceUrl();
+      releaseAudioVideo();
+
       throw createOperationError("Unable to load the selected video", error);
     }
   }
 
   /**
-   * Processes the source video at the requested frame rate.
-   *
-   * The total frame count is calculated from the source duration and FPS.
-   * Frames are processed sequentially because the application uses one
-   * active worker request at a time.
+   * Processes the source video and generates a playable WebM preview.
    *
    * @param {number} frameRate Frames per second.
-   * @returns {Promise<{count: number, frameRate: number, width: number, height: number}>}
+   * @returns {Promise<{count: number, frameRate: number, width: number, height: number, blob: Blob}>}
    */
   async function process(frameRate) {
     assertNotDisposed();
@@ -143,6 +149,27 @@ export function createVideoProcessor({
 
     validateFrameRate(frameRate);
 
+    if (!audioVideo) {
+      throw new Error("The original audio source is not available.");
+    }
+
+    const AudioContextConstructor =
+      window.AudioContext || window.webkitAudioContext;
+
+    if (!AudioContextConstructor) {
+      throw new TypeError("Web Audio API is not supported by this browser.");
+    }
+
+    if (!audioContext) {
+      audioContext = new AudioContextConstructor();
+    }
+
+    if (audioContext.state === "closed") {
+      throw new Error("The audio context is no longer available.");
+    }
+
+    const audioContextReady = audioContext.resume();
+
     const frameCount = Math.ceil(sourceDuration * frameRate);
 
     if (frameCount > MAX_FRAME_COUNT) {
@@ -153,10 +180,13 @@ export function createVideoProcessor({
     }
 
     isProcessing = true;
-    processedFrames = [];
-    processedFrameRate = frameRate;
+    invalidate();
+
+    const currentVersion = operationVersion;
 
     try {
+      await audioContextReady;
+
       frameCanvas.width = sourceVideo.videoWidth;
       frameCanvas.height = sourceVideo.videoHeight;
 
@@ -167,71 +197,65 @@ export function createVideoProcessor({
         ),
       );
 
-      processedFrames = await timestamps.reduce(
-        (sequence, timestamp, index) =>
-          sequence.then(async (results) => {
-            assertNotDisposed();
+      const results = [];
 
-            try {
-              await seekTo(sourceVideo, timestamp);
-              assertNotDisposed();
+      for (let index = 0; index < timestamps.length; index += 1) {
+        assertNotDisposed();
+        assertOperationVersion(currentVersion);
 
-              frameContext.drawImage(
-                sourceVideo,
-                0,
-                0,
-                frameCanvas.width,
-                frameCanvas.height,
-              );
+        try {
+          await seekTo(sourceVideo, timestamps[index]);
 
-              const frameData = frameContext.getImageData(
-                0,
-                0,
-                frameCanvas.width,
-                frameCanvas.height,
-              );
+          frameContext.drawImage(
+            sourceVideo,
+            0,
+            0,
+            frameCanvas.width,
+            frameCanvas.height,
+          );
 
-              const frame = ImageDataBuffer.fromImageData(frameData);
-              const options = getProcessingOptions(frame);
-              const result = await processFrame(frame, options);
+          const frameData = frameContext.getImageData(
+            0,
+            0,
+            frameCanvas.width,
+            frameCanvas.height,
+          );
 
-              results.push(result);
-              return results;
-            } catch (error) {
-              throw createOperationError(
-                `Failed to process frame ${index + 1} of ${frameCount}`,
-                error,
-              );
-            }
-          }),
-        Promise.resolve([]),
-      );
+          const frame = ImageDataBuffer.fromImageData(frameData);
+          const options = getProcessingOptions(frame);
+          const result = await processFrame(frame, options);
+
+          assertOperationVersion(currentVersion);
+
+          results.push(result);
+        } catch (error) {
+          throw createOperationError(
+            `Failed to process frame ${index + 1} of ${frameCount}`,
+            error,
+          );
+        }
+      }
 
       assertNotDisposed();
+      assertOperationVersion(currentVersion);
 
-      const firstFrame = processedFrames[0];
-
-      if (!firstFrame) {
+      if (results.length === 0) {
         throw new Error("Video processing did not produce any frames.");
       }
 
+      const firstFrame = results[0];
+
       outputCanvas.width = firstFrame.width;
       outputCanvas.height = firstFrame.height;
-      drawFrame(firstFrame);
 
-      previewCanvas.width = firstFrame.width;
-      previewCanvas.height = firstFrame.height;
+      processedFrames = results;
+      processedFrameRate = frameRate;
 
-      const previewContext = previewCanvas.getContext("2d");
+      // Generate the actual playable video before reporting success.
+      previewBlob = await recordProcessedFrames(results, frameRate);
 
-      if (!previewContext) {
-        throw new Error("Unable to initialize the image preview canvas.");
-      }
-
-      previewContext.putImageData(firstFrame.toImageData(), 0, 0);
-
-      previewCanvas.hidden = false;
-      videoPreview.hidden = true;
+      assertNotDisposed();
+      assertOperationVersion(currentVersion);
 
       await seekTo(sourceVideo, 0);
 
@@ -240,7 +264,15 @@ export function createVideoProcessor({
         frameRate: processedFrameRate,
         width: firstFrame.width,
         height: firstFrame.height,
+        blob: previewBlob,
       };
+    } catch (error) {
+      if (operationVersion === currentVersion) {
+        processedFrames = [];
+        previewBlob = null;
+      }
+
+      throw error;
     } finally {
       isProcessing = false;
     }
@@ -320,7 +352,334 @@ export function createVideoProcessor({
   }
 
   /**
-   * Exports the processed frames as WebM.
+   * Records the processed frames and original audio into a playable WebM.
+   *
+   * Video is captured from the output canvas. Audio is captured independently
+   * from the original video through the Web Audio API.
+   *
+   * Frame scheduling uses the original video's duration as its timing reference.
+   *
+   * @param {ImageDataBuffer[]} frames
+   * @param {number} frameRate
+   * @returns {Promise<Blob>}
+   */
+  async function recordProcessedFrames(frames, frameRate) {
+    if (typeof MediaRecorder === "undefined") {
+      throw new TypeError("Video recording is not supported by this browser.");
+    }
+
+    if (typeof outputCanvas.captureStream !== "function") {
+      throw new TypeError(
+        "Canvas video capture is not supported by this browser.",
+      );
+    }
+
+    if (!audioVideo) {
+      throw new Error("The original audio source is not available.");
+    }
+
+    const AudioContextConstructor =
+      window.AudioContext || window.webkitAudioContext;
+
+    if (!AudioContextConstructor) {
+      throw new TypeError("Web Audio API is not supported by this browser.");
+    }
+
+    if (!audioContext) {
+      audioContext = new AudioContextConstructor();
+    }
+
+    if (audioContext.state === "closed") {
+      throw new Error("The audio context is no longer available.");
+    }
+
+    await audioContext.resume();
+
+    // Use manual frame capture when supported by the browser.
+    const videoStream = outputCanvas.captureStream(0);
+    const videoTrack = videoStream.getVideoTracks()[0];
+
+    if (!videoTrack) {
+      stopStreamTracks(videoStream);
+      throw new Error("Unable to create a video capture track.");
+    }
+
+    const supportsManualCapture = typeof videoTrack.requestFrame === "function";
+
+    // Fall back to automatic capture if requestFrame() is unavailable.
+    let recordingStream = videoStream;
+
+    if (!supportsManualCapture) {
+      stopStreamTracks(videoStream);
+      recordingStream = outputCanvas.captureStream(frameRate);
+    }
+
+    let stream = null;
+
+    try {
+      // Route the original video's audio to a recording-only destination.
+      audioDestination = audioContext.createMediaStreamDestination();
+
+      if (!audioSourceNode) {
+        audioSourceNode = audioContext.createMediaElementSource(audioVideo);
+      }
+
+      audioSourceNode.connect(audioDestination);
+
+      stream = new MediaStream([
+        ...recordingStream.getVideoTracks(),
+        ...audioDestination.stream.getAudioTracks(),
+      ]);
+
+      const mimeType = getSupportedMimeType();
+
+      let recorder;
+
+      try {
+        recorder = mimeType
+          ? new MediaRecorder(stream, { mimeType })
+          : new MediaRecorder(stream);
+      } catch (error) {
+        throw createOperationError(
+          "Unable to initialize video recording",
+          error,
+        );
+      }
+
+      return await new Promise((resolve, reject) => {
+        const chunks = [];
+        let settled = false;
+        let timer = null;
+        let frameIndex = 0;
+        let recordingStartTime = 0;
+
+        const cleanup = () => {
+          if (timer !== null) {
+            clearTimeout(timer);
+            timer = null;
+          }
+
+          recorder.removeEventListener("dataavailable", handleDataAvailable);
+          recorder.removeEventListener("error", handleRecordingError);
+          recorder.removeEventListener("stop", handleRecordingStopped);
+
+          audioVideo.pause();
+
+          // Keep audioSourceNode available for subsequent recordings.
+          if (audioSourceNode) {
+            audioSourceNode.disconnect();
+          }
+
+          if (audioDestination) {
+            stopStreamTracks(audioDestination.stream);
+            audioDestination = null;
+          }
+
+          stopStreamTracks(recordingStream);
+        };
+
+        const finish = async (error = null) => {
+          if (settled) {
+            return;
+          }
+
+          settled = true;
+          cleanup();
+
+          if (error) {
+            reject(error);
+            return;
+          }
+
+          try {
+            const blob = new Blob(chunks, {
+              type: recorder.mimeType || "video/webm",
+            });
+
+            if (blob.size === 0) {
+              throw new Error("Video recording produced an empty file.");
+            }
+
+            // Preserve the original video's exact duration.
+            const duration = sourceDuration * 1000;
+
+            const fixedBlob = await fixWebmDuration(blob, duration, {
+              logger: false,
+            });
+
+            if (!fixedBlob || fixedBlob.size === 0) {
+              throw new Error(
+                "WebM metadata correction produced an empty file.",
+              );
+            }
+
+            resolve(fixedBlob);
+          } catch (error) {
+            reject(
+              createOperationError(
+                "Unable to add duration metadata to the WebM video",
+                error,
+              ),
+            );
+          }
+        };
+
+        const finishWithError = (error) => {
+          void finish(error).catch((finishError) => {
+            console.error("[Pixel Art] Video finalization error:", finishError);
+          });
+        };
+
+        const handleDataAvailable = (event) => {
+          if (event.data && event.data.size > 0) {
+            chunks.push(event.data);
+          }
+        };
+
+        const handleRecordingError = (event) => {
+          finishWithError(
+            createMediaElementError("Video recording failed", event),
+          );
+        };
+
+        const handleRecordingStopped = () => {
+          void finish().catch((error) => {
+            console.error("[Pixel Art] Video finalization error:", error);
+          });
+        };
+
+        /**
+         * Captures the next frame according to elapsed recording time.
+         *
+         * The timer is recalculated on every iteration instead of assuming
+         * that setTimeout() executes at an exact frame interval.
+         */
+        const renderNextFrame = () => {
+          if (settled) {
+            return;
+          }
+
+          try {
+            assertNotDisposed();
+
+            const elapsed = (performance.now() - recordingStartTime) / 1000;
+
+            // Stop at the original video's duration.
+            if (elapsed >= sourceDuration) {
+              stopRecorder(recorder);
+              return;
+            }
+
+            // Capture every frame that should have been displayed by now.
+            if (
+              frameIndex < frames.length &&
+              elapsed >= frameIndex / frameRate
+            ) {
+              drawFrame(frames[frameIndex]);
+
+              if (supportsManualCapture) {
+                videoTrack.requestFrame();
+              }
+
+              frameIndex += 1;
+            }
+
+            // Calculate when the next frame should be captured.
+            const nextFrameTime =
+              frameIndex < frames.length
+                ? frameIndex / frameRate
+                : sourceDuration;
+
+            const remainingTime = Math.max(
+              0,
+              nextFrameTime - (performance.now() - recordingStartTime) / 1000,
+            );
+
+            timer = setTimeout(
+              renderNextFrame,
+              Math.max(1, remainingTime * 1000),
+            );
+          } catch (error) {
+            stopRecorder(recorder);
+            finishWithError(error);
+          }
+        };
+
+        /**
+         * Starts audio playback and then starts frame scheduling.
+         *
+         * Keeping this as an independent async function avoids nested
+         * promise callbacks and floating promises.
+         *
+         * @returns {Promise<void>}
+         */
+        const startRecordingPlayback = async () => {
+          try {
+            await audioVideo.play();
+
+            if (settled) {
+              return;
+            }
+
+            // Start the recording clock only after audio playback begins.
+            recordingStartTime = performance.now();
+
+            // Capture the first frame immediately.
+            renderNextFrame();
+          } catch (error) {
+            stopRecorder(recorder);
+
+            finishWithError(
+              createOperationError(
+                "Unable to play the original video's audio",
+                error,
+              ),
+            );
+          }
+        };
+
+        recorder.addEventListener("dataavailable", handleDataAvailable);
+        recorder.addEventListener("error", handleRecordingError);
+        recorder.addEventListener("stop", handleRecordingStopped);
+
+        try {
+          recorder.start(250);
+
+          // Start audio playback from the beginning.
+          audioVideo.currentTime = 0;
+
+          // Explicitly handle the returned promise.
+          void startRecordingPlayback();
+        } catch (error) {
+          stopRecorder(recorder);
+
+          finishWithError(
+            createOperationError("Unable to record processed frames", error),
+          );
+        }
+      });
+    } catch (error) {
+      if (audioSourceNode) {
+        // Disconnect but preserve the node for subsequent recordings.
+        audioSourceNode.disconnect();
+      }
+
+      if (audioDestination) {
+        stopStreamTracks(audioDestination.stream);
+        audioDestination = null;
+      }
+
+      stopStreamTracks(recordingStream);
+
+      throw error;
+    }
+  }
+
+  /**
+   * Returns the previously generated WebM.
+   *
+   * Exporting does not record the canvas again. This prevents repeated
+   * exports from depending on playback or captureStream timing.
    *
    * @returns {Promise<Blob>}
    */
@@ -331,189 +690,29 @@ export function createVideoProcessor({
       throw new Error("Another video operation is already in progress.");
     }
 
-    if (processedFrames.length === 0) {
+    if (!previewBlob || previewBlob.size === 0) {
       throw new Error("Process a video before exporting it.");
-    }
-
-    if (typeof MediaRecorder === "undefined") {
-      throw new TypeError("Video export is not supported by this browser.");
-    }
-
-    if (typeof outputCanvas.captureStream !== "function") {
-      throw new TypeError(
-        "Canvas video capture is not supported by this browser.",
-      );
     }
 
     isSaving = true;
 
     try {
-      return await recordSourcePlayback();
+      return previewBlob;
     } finally {
       isSaving = false;
     }
   }
 
   /**
-   * Records the processed canvas while the source video plays.
+   * Invalidates the previously processed result.
    *
-   * @returns {Promise<Blob>}
+   * Call this whenever processing settings change.
    */
-  function recordSourcePlayback() {
-    const canvasStream = outputCanvas.captureStream(processedFrameRate);
-    const sourceCapture = getSourceCaptureStream();
+  function invalidate() {
+    operationVersion += 1;
 
-    const tracks = [
-      ...canvasStream.getVideoTracks(),
-      ...(sourceCapture?.getAudioTracks() ?? []),
-    ];
-
-    const combinedStream = new MediaStream(tracks);
-    const mimeType = getSupportedMimeType();
-
-    let recorder;
-
-    try {
-      recorder = mimeType
-        ? new MediaRecorder(combinedStream, { mimeType })
-        : new MediaRecorder(combinedStream);
-    } catch (error) {
-      stopStreamTracks(combinedStream);
-      stopStreamTracks(sourceCapture);
-      throw createOperationError("Unable to initialize video recording", error);
-    }
-
-    return new Promise((resolve, reject) => {
-      const chunks = [];
-      let settled = false;
-      let animationId = null;
-
-      const cleanup = () => {
-        if (animationId !== null) {
-          cancelAnimationFrame(animationId);
-          animationId = null;
-        }
-
-        sourceVideo.removeEventListener("ended", handleEnded);
-        recorder.removeEventListener("dataavailable", handleDataAvailable);
-        recorder.removeEventListener("error", handleRecordingError);
-        recorder.removeEventListener("stop", handleRecordingStopped);
-
-        stopStreamTracks(combinedStream);
-        stopStreamTracks(sourceCapture);
-      };
-
-      const finish = (error = null) => {
-        if (settled) {
-          return;
-        }
-
-        settled = true;
-        cleanup();
-
-        if (error) {
-          reject(error);
-          return;
-        }
-
-        resolve(new Blob(chunks, { type: recorder.mimeType || "video/webm" }));
-      };
-
-      const handleDataAvailable = (event) => {
-        if (event.data && event.data.size > 0) {
-          chunks.push(event.data);
-        }
-      };
-
-      const handleRecordingError = (event) => {
-        finish(createMediaElementError("Video recording failed", event));
-      };
-
-      const handleRecordingStopped = () => {
-        finish();
-      };
-
-      const renderCurrentFrame = () => {
-        if (settled || isDisposed) {
-          return;
-        }
-
-        const progress = Math.min(
-          0.999999,
-          sourceVideo.currentTime / sourceDuration,
-        );
-
-        const frameIndex = Math.min(
-          processedFrames.length - 1,
-          Math.floor(progress * processedFrames.length),
-        );
-
-        const frame = processedFrames.at(frameIndex);
-
-        if (frame) {
-          drawFrame(frame);
-        }
-
-        if (!sourceVideo.ended && !sourceVideo.paused) {
-          animationId = requestAnimationFrame(renderCurrentFrame);
-        }
-      };
-
-      const handleEnded = () => {
-        const lastFrame = processedFrames.at(-1);
-
-        if (lastFrame) {
-          drawFrame(lastFrame);
-        }
-
-        if (recorder.state !== "inactive") {
-          recorder.stop();
-        } else {
-          finish();
-        }
-      };
-
-      recorder.addEventListener("dataavailable", handleDataAvailable);
-      recorder.addEventListener("error", handleRecordingError);
-      recorder.addEventListener("stop", handleRecordingStopped);
-      sourceVideo.addEventListener("ended", handleEnded, { once: true });
-
-      seekTo(sourceVideo, 0)
-        .then(() => {
-          if (settled || isDisposed) {
-            finish(new Error("Video export was cancelled."));
-            return;
-          }
-
-          recorder.start(250);
-          animationId = requestAnimationFrame(renderCurrentFrame);
-
-          return sourceVideo.play();
-        })
-        .catch((error) => {
-          stopRecorder(recorder);
-          finish(createOperationError("Unable to start video export", error));
-        });
-    });
-  }
-
-  /**
-   * Returns the source media stream when captureStream is supported.
-   *
-   * @returns {MediaStream | null}
-   */
-  function getSourceCaptureStream() {
-    const capture = sourceVideo.captureStream ?? sourceVideo.mozCaptureStream;
-
-    if (typeof capture !== "function") {
-      return null;
-    }
-
-    try {
-      return capture.call(sourceVideo);
-    } catch {
-      return null;
-    }
+    processedFrames = [];
+    previewBlob = null;
   }
 
   /**
@@ -548,6 +747,29 @@ export function createVideoProcessor({
   }
 
   /**
+   * Releases the independent audio playback element and its resources.
+   */
+  function releaseAudioVideo() {
+    if (audioVideo) {
+      audioVideo.pause();
+      audioVideo.removeAttribute("src");
+      audioVideo.load();
+
+      audioVideo = null;
+    }
+
+    if (audioSourceNode) {
+      audioSourceNode.disconnect();
+      audioSourceNode = null;
+    }
+
+    if (audioDestination) {
+      stopStreamTracks(audioDestination.stream);
+      audioDestination = null;
+    }
+  }
+
+  /**
    * Releases processor resources.
    */
   function dispose() {
@@ -556,15 +778,20 @@ export function createVideoProcessor({
     }
 
     isDisposed = true;
-    releaseSourceUrl();
+    invalidate();
 
-    if (outputUrl) {
-      URL.revokeObjectURL(outputUrl);
-      outputUrl = null;
+    releaseSourceUrl();
+    releaseAudioVideo();
+
+    sourceDuration = 0;
+
+    if (audioContext && audioContext.state !== "closed") {
+      audioContext.close().catch((error) => {
+        console.warn("[Pixel Art] Unable to close audio context:", error);
+      });
     }
 
-    processedFrames = [];
-    sourceDuration = 0;
+    audioContext = null;
   }
 
   /**
@@ -573,6 +800,17 @@ export function createVideoProcessor({
   function assertNotDisposed() {
     if (isDisposed) {
       throw new Error("The video processor has been disposed.");
+    }
+  }
+
+  /**
+   * Checks whether an asynchronous processing operation is still current.
+   *
+   * @param {number} version
+   */
+  function assertOperationVersion(version) {
+    if (version !== operationVersion) {
+      throw new Error("Video processing was invalidated.");
     }
   }
 }

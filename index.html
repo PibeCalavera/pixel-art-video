@@ -2,7 +2,6 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-
     <meta
       name="viewport"
       content="width=device-width, initial-scale=1.0" />
@@ -12,7 +11,6 @@
     <link
       rel="stylesheet"
       href="/styles/main.css" />
-
     <link
       rel="icon"
       type="image/png"
@@ -24,7 +22,6 @@
       <header class="app-header">
         <div>
           <h1>Pixel Art Converter</h1>
-
           <p>
             A web-based image processing tool for creating pixel art references.
           </p>
@@ -61,12 +58,12 @@
 
       <section class="workspace">
         <aside class="controls-panel">
+          <!-- Resize -->
           <div class="panel-section">
             <h2>Resize</h2>
 
             <label class="field">
               <span>Algorithm</span>
-
               <select data-control="resize-algorithm">
                 <option value="nearest">Nearest Neighbor</option>
                 <option value="bilinear">Bilinear</option>
@@ -77,7 +74,6 @@
             <div class="field-row">
               <label class="field">
                 <span>Dimension mode</span>
-
                 <select data-control="resize-mode">
                   <option
                     value="scale"
@@ -92,9 +88,9 @@
                 class="field"
                 data-resize-scale-group>
                 <span>Scale</span>
-
                 <select data-control="resize-scale">
                   <option value="0.25">×0.25 (25%)</option>
+                  <option value="0.33">×0.33 (33%)</option>
                   <option value="0.5">×0.5 (50%)</option>
                   <option value="0.75">×0.75 (75%)</option>
                   <option
@@ -115,7 +111,6 @@
               hidden>
               <label class="field">
                 <span>Width (px)</span>
-
                 <input
                   data-control="target-width"
                   type="number"
@@ -126,7 +121,6 @@
 
               <label class="field">
                 <span>Height (px)</span>
-
                 <input
                   data-control="target-height"
                   type="number"
@@ -137,7 +131,10 @@
             </div>
           </div>
 
-          <div class="panel-section">
+          <!-- Palette -->
+          <div
+            class="panel-section"
+            data-palette-group>
             <h2>Palette</h2>
 
             <label class="field">
@@ -146,12 +143,12 @@
             </label>
           </div>
 
+          <!-- Dithering -->
           <div class="panel-section">
             <h2>Dithering</h2>
 
             <label class="field">
               <span>Algorithm</span>
-
               <select data-control="dither-algorithm">
                 <option value="none">None</option>
                 <option value="bayer">Bayer</option>
@@ -159,40 +156,82 @@
                 <option value="atkinson">Atkinson</option>
                 <option value="pair-dither">Pair Dither</option>
                 <option value="rgbk">Retro RGBK</option>
+                <option value="rgb-stripe">RGB Stripe</option>
               </select>
             </label>
 
-            <label class="field">
-              <span>Matrix size</span>
+            <!-- RGB Stripe options -->
+            <div
+              data-rgb-stripe-group
+              hidden>
+              <label class="field">
+                <span>Band orientation</span>
+                <select data-control="rgb-stripe-layout">
+                  <option
+                    value="horizontal"
+                    selected>
+                    Horizontal
+                  </option>
+                  <option value="vertical">Vertical</option>
+                </select>
+              </label>
 
-              <select data-control="bayer-matrix-size">
-                <option value="2">2 × 2</option>
-                <option
-                  value="4"
-                  selected>
-                  4 × 4
-                </option>
-                <option value="8">8 × 8</option>
-              </select>
-            </label>
+              <label class="field">
+                <span>Channel order</span>
+                <select data-control="rgb-stripe-channel-order">
+                  <option
+                    value="R,G,B"
+                    selected>
+                    RGB
+                  </option>
+                  <option value="R,B,G">RBG</option>
+                  <option value="G,R,B">GRB</option>
+                  <option value="G,B,R">GBR</option>
+                  <option value="B,R,G">BRG</option>
+                  <option value="B,G,R">BGR</option>
+                </select>
+              </label>
+            </div>
 
-            <label class="field">
-              <span>
-                Strength
-                <output id="dither-strength-value">1</output>
-              </span>
+            <!-- Matrix-dependent options -->
+            <div data-matrix-group>
+              <label class="field">
+                <span>Matrix size</span>
+                <select data-control="bayer-matrix-size">
+                  <option value="2">2 × 2</option>
+                  <option
+                    value="4"
+                    selected>
+                    4 × 4
+                  </option>
+                  <option value="8">8 × 8</option>
+                </select>
+              </label>
+            </div>
 
-              <input
-                data-control="dither-strength"
-                type="range"
-                min="0"
-                max="1"
-                step="0.05"
-                value="1" />
-            </label>
+            <!-- Strength-dependent options -->
+            <div data-strength-group>
+              <label class="field">
+                <span>
+                  Strength
+                  <output id="dither-strength-value">1</output>
+                </span>
+
+                <input
+                  data-control="dither-strength"
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.05"
+                  value="1" />
+              </label>
+            </div>
           </div>
 
-          <div class="panel-section">
+          <!-- Image-only controls -->
+          <div
+            class="panel-section"
+            data-image-only>
             <h2>Preview</h2>
 
             <label class="checkbox-field">
@@ -200,16 +239,17 @@
                 data-control="realtime-preview"
                 type="checkbox"
                 checked />
-
               <span>Realtime preview</span>
             </label>
           </div>
 
+          <!-- Image and video actions -->
           <div class="panel-actions">
             <button
               id="process-button"
               class="primary-button"
               type="button"
+              data-image-only
               disabled>
               Process image
             </button>
@@ -217,6 +257,7 @@
             <button
               id="save-button"
               type="button"
+              data-image-only
               disabled>
               Save PNG
             </button>
@@ -224,36 +265,52 @@
             <button
               id="discard-button"
               type="button"
+              data-image-only
               disabled>
               Discard result
             </button>
 
-            <label class="field">
-              <span>Video output frame rate (FPS)</span>
+            <div
+              data-video-only
+              hidden>
+              <label class="field">
+                <span>Video output frame rate (FPS)</span>
+                <input
+                  id="video-frame-rate"
+                  type="number"
+                  min="1"
+                  max="60"
+                  step="1"
+                  value="24"
+                  required />
+              </label>
 
-              <input
-                id="video-frame-rate"
-                type="number"
-                min="1"
-                max="60"
-                step="1"
-                value="24"
-                required />
-            </label>
+              <button
+                id="process-video-button"
+                type="button"
+                disabled>
+                Process video
+              </button>
 
-            <button
-              id="process-video-button"
-              type="button"
-              disabled>
-              Process video
-            </button>
+              <label class="field">
+                <span>Export format</span>
+                <select id="video-export-format">
+                  <option
+                    value="webm"
+                    selected>
+                    WebM
+                  </option>
+                  <option value="mp4">MP4 (H.264 + AAC)</option>
+                </select>
+              </label>
 
-            <button
-              id="save-video-button"
-              type="button"
-              disabled>
-              Export WebM
-            </button>
+              <button
+                id="save-video-button"
+                type="button"
+                disabled>
+                Export video
+              </button>
+            </div>
           </div>
 
           <output
@@ -264,6 +321,7 @@
           </output>
         </aside>
 
+        <!-- Shared image and video preview -->
         <section class="preview-panel">
           <div class="preview-header">
             <h2>Preview</h2>
@@ -278,23 +336,26 @@
           <div
             id="preview-container"
             class="preview-container">
+            <!-- Empty state -->
             <div
               id="empty-preview"
               class="empty-preview">
               <p>No image loaded.</p>
-
               <span>Choose an image to see it here.</span>
             </div>
 
+            <!-- Image preview -->
             <canvas
               id="preview-canvas"
               hidden></canvas>
 
+            <!-- Video preview -->
             <video
               id="video-preview"
-              class="video-preview"
+              class="preview-video"
               controls
               playsinline
+              muted
               hidden></video>
           </div>
         </section>

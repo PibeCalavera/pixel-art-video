@@ -13,6 +13,7 @@ import {
   ditherAtkinson,
   ditherPair,
   ditherRetroRGBK,
+  ditherRGBStripe,
 } from "./dithering/index.js";
 
 const RESIZE_ALGORITHMS = {
@@ -30,6 +31,7 @@ const DITHERING_ALGORITHMS = {
   atkinson: ditherAtkinson,
   "pair-dither": ditherPair,
   rgbk: ditherRetroRGBK,
+  "rgb-stripe": ditherRGBStripe,
 };
 
 export function getResizeAlgorithm(name) {

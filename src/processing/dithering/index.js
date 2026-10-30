@@ -4,3 +4,4 @@ export { ditherFloydSteinberg } from "./floyd-steinberg.js";
 export { ditherAtkinson } from "./atkinson.js";
 export { ditherPair, getPairMatrixSizes } from "./pair-dither.js";
 export { ditherRetroRGBK } from "./rgbk-dither.js";
+export { ditherRGBStripe } from "./rgb-stripe.js";

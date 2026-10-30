@@ -9,6 +9,7 @@
  *   setOptions: Function,
  *   getRealtimePreview: Function,
  *   setRealtimePreview: Function,
+ *   setEditorMode: Function,
  *   onChange: Function
  * }}
  */
@@ -17,7 +18,6 @@ export function createControls(root, { palettes = [] } = {}) {
     throw new TypeError("Controls require an HTMLElement root.");
   }
 
-  // Cache references to the controls used by the application.
   const elements = {
     resizeAlgorithm: root.querySelector('[data-control="resize-algorithm"]'),
     resizeMode: root.querySelector('[data-control="resize-mode"]'),
@@ -26,42 +26,78 @@ export function createControls(root, { palettes = [] } = {}) {
     resizeExactGroup: root.querySelector("[data-resize-exact-group]"),
     targetWidth: root.querySelector('[data-control="target-width"]'),
     targetHeight: root.querySelector('[data-control="target-height"]'),
+
     quantizationAlgorithm: root.querySelector(
       '[data-control="quantization-algorithm"]',
     ),
+
     palette: root.querySelector('[data-control="palette"]'),
+    paletteGroup: root.querySelector("[data-palette-group]"),
+
     ditherAlgorithm: root.querySelector('[data-control="dither-algorithm"]'),
     ditherStrength: root.querySelector('[data-control="dither-strength"]'),
+    strengthGroup: root.querySelector("[data-strength-group]"),
+
     bayerMatrixSize: root.querySelector('[data-control="bayer-matrix-size"]'),
+    matrixGroup: root.querySelector("[data-matrix-group]"),
+
+    rgbStripeGroup: root.querySelector("[data-rgb-stripe-group]"),
+    rgbStripeLayout: root.querySelector('[data-control="rgb-stripe-layout"]'),
+    rgbStripeChannelOrder: root.querySelector(
+      '[data-control="rgb-stripe-channel-order"]',
+    ),
+
     realtimePreview: root.querySelector('[data-control="realtime-preview"]'),
   };
 
+  const imageOnlyGroups = [...root.querySelectorAll("[data-image-only]")];
+
+  const videoOnlyGroups = [...root.querySelectorAll("[data-video-only]")];
+
+  let editorMode = "image";
+
   populatePaletteSelect(elements.palette, palettes);
 
-  // Ensure the resize controls match the initially selected mode.
   updateResizeMode();
+  updateDitherControls();
+  updateEditorMode();
+
   elements.resizeMode?.addEventListener("change", updateResizeMode);
+  elements.ditherAlgorithm?.addEventListener("change", updateDitherControls);
 
   return {
     getOptions,
     setOptions,
     getRealtimePreview,
     setRealtimePreview,
+    setEditorMode,
     onChange,
   };
 
   /**
-   * Reads and validates the current control values.
-   *
-   * Resize dimensions are returned according to the selected mode:
-   * - "scale": use the original dimensions multiplied by a scale factor.
-   * - "exact": use the explicitly requested width and height.
+   * Reads the current control values.
    *
    * @returns {Object} Processing options.
    */
   function getOptions() {
     const paletteId = getValue(elements.palette, null);
     const resizeMode = getValue(elements.resizeMode, "scale");
+    const ditherAlgorithm = getValue(elements.ditherAlgorithm, "none");
+
+    const ditherOptions = {
+      algorithm: ditherAlgorithm,
+      strength: getNumber(elements.ditherStrength, 1),
+      matrixSize: getPositiveInteger(elements.bayerMatrixSize, 4),
+      palette: paletteId,
+    };
+
+    if (ditherAlgorithm === "rgb-stripe") {
+      ditherOptions.layout = getValue(elements.rgbStripeLayout, "horizontal");
+
+      ditherOptions.channelOrder = getChannelOrder(
+        elements.rgbStripeChannelOrder,
+      );
+    }
 
     return {
       resize: {
@@ -83,26 +119,20 @@ export function createControls(root, { palettes = [] } = {}) {
         palette: paletteId,
       },
 
-      dither: {
-        algorithm: getValue(elements.ditherAlgorithm, "none"),
-        strength: getNumber(elements.ditherStrength, 1),
-        matrixSize: getPositiveInteger(elements.bayerMatrixSize, 4),
-        palette: paletteId,
-      },
+      dither: ditherOptions,
     };
   }
 
   /**
    * Restores processing options in the UI.
    *
-   * Supports older configurations that do not include an explicit
-   * resize mode, inferring the mode from the available dimensions.
+   * Supports older configurations without an explicit resize mode.
    *
    * @param {Object} [options={}] - Processing options to restore.
    * @throws {TypeError} If options is not an object.
    */
   function setOptions(options = {}) {
-    if (!options || typeof options !== "object") {
+    if (!options || typeof options !== "object" || Array.isArray(options)) {
       throw new TypeError("Options must be an object.");
     }
 
@@ -111,7 +141,6 @@ export function createControls(root, { palettes = [] } = {}) {
 
       setValue(elements.resizeAlgorithm, resize.algorithm);
 
-      // Infer a mode when restoring a configuration created by an older version.
       const mode =
         resize.mode === "exact" || resize.mode === "scale"
           ? resize.mode
@@ -120,11 +149,7 @@ export function createControls(root, { palettes = [] } = {}) {
             : "scale";
 
       setValue(elements.resizeMode, mode);
-
-      if (resize.scale != null) {
-        setValue(elements.resizeScale, resize.scale);
-      }
-
+      setValue(elements.resizeScale, resize.scale);
       setValue(elements.targetWidth, resize.width);
       setValue(elements.targetHeight, resize.height);
 
@@ -136,12 +161,21 @@ export function createControls(root, { palettes = [] } = {}) {
     }
 
     if (options.dither) {
-      setValue(elements.ditherAlgorithm, options.dither.algorithm);
-      setValue(elements.ditherStrength, options.dither.strength);
-      setValue(elements.bayerMatrixSize, options.dither.matrixSize);
+      const dither = options.dither;
+
+      setValue(elements.ditherAlgorithm, dither.algorithm);
+      setValue(elements.ditherStrength, dither.strength);
+      setValue(elements.bayerMatrixSize, dither.matrixSize);
+      setValue(elements.rgbStripeLayout, dither.layout);
+
+      if (dither.channelOrder != null) {
+        setValue(
+          elements.rgbStripeChannelOrder,
+          normalizeChannelOrder(dither.channelOrder).join(","),
+        );
+      }
     }
 
-    // Both quantization and dithering use the selected palette.
     const paletteId = options.quantize?.palette ?? options.dither?.palette;
 
     if (paletteId != null) {
@@ -151,13 +185,13 @@ export function createControls(root, { palettes = [] } = {}) {
     if (options.realtimePreview !== undefined) {
       setRealtimePreview(options.realtimePreview);
     }
+
+    updateDitherControls();
+    updateEditorMode();
   }
 
   /**
-   * Shows the controls relevant to the selected resize mode.
-   *
-   * Disabling inactive inputs prevents users from editing values
-   * that are not used by the current configuration.
+   * Updates visibility and enabled state of resize controls.
    */
   function updateResizeMode() {
     const exact = elements.resizeMode?.value === "exact";
@@ -184,12 +218,141 @@ export function createControls(root, { palettes = [] } = {}) {
   }
 
   /**
+   * Updates controls that depend on the selected dithering algorithm.
+   *
+   * RGBK and RGB Stripe do not require an external palette.
+   * Matrix size is only used by Bayer and Pair Dither.
+   * Strength is disabled for algorithms that do not consume it.
+   */
+  function updateDitherControls() {
+    const algorithm = getValue(elements.ditherAlgorithm, "none");
+
+    const isRGBStripe = algorithm === "rgb-stripe";
+    const isPaletteFree = algorithm === "rgbk" || isRGBStripe;
+
+    const usesMatrix = ["bayer", "pair-dither"].includes(algorithm);
+
+    const usesStrength = [
+      "bayer",
+      "floyd-steinberg",
+      "atkinson",
+      "pair-dither",
+    ].includes(algorithm);
+
+    setGroupVisibility(elements.rgbStripeGroup, isRGBStripe);
+    setGroupVisibility(elements.paletteGroup, !isPaletteFree);
+    setGroupVisibility(elements.matrixGroup, usesMatrix);
+    setGroupVisibility(elements.strengthGroup, usesStrength);
+
+    if (elements.rgbStripeLayout) {
+      elements.rgbStripeLayout.disabled = !isRGBStripe;
+    }
+
+    if (elements.rgbStripeChannelOrder) {
+      elements.rgbStripeChannelOrder.disabled = !isRGBStripe;
+    }
+
+    if (elements.bayerMatrixSize) {
+      elements.bayerMatrixSize.disabled = !usesMatrix;
+    }
+
+    if (elements.ditherStrength) {
+      elements.ditherStrength.disabled = !usesStrength;
+    }
+  }
+
+  /**
+   * Updates visibility and enabled state of a control group.
+   *
+   * @param {HTMLElement|null} group
+   * @param {boolean} visible
+   */
+  function setGroupVisibility(group, visible) {
+    if (!group) {
+      return;
+    }
+
+    group.hidden = !visible;
+
+    for (const control of group.querySelectorAll(
+      "input, select, button, textarea",
+    )) {
+      control.disabled = !visible;
+    }
+  }
+
+  /**
+   * Changes between image and video editor modes.
+   *
+   * Image-only controls are hidden in video mode.
+   * Video-only controls are hidden in image mode.
+   *
+   * @param {"image"|"video"} mode
+   * @throws {TypeError} If mode is invalid.
+   */
+  function setEditorMode(mode) {
+    if (mode !== "image" && mode !== "video") {
+      throw new TypeError('Editor mode must be "image" or "video".');
+    }
+
+    editorMode = mode;
+    updateEditorMode();
+  }
+
+  /**
+   * Updates visibility of controls according to the current editor mode.
+   */
+  function updateEditorMode() {
+    const isImageMode = editorMode === "image";
+
+    for (const group of imageOnlyGroups) {
+      setGroupVisibility(group, isImageMode);
+    }
+
+    for (const group of videoOnlyGroups) {
+      setGroupVisibility(group, !isImageMode);
+    }
+  }
+
+  /**
+   * Returns the selected RGB Stripe channel order.
+   *
+   * @param {HTMLSelectElement|null} element
+   * @returns {string[]}
+   */
+  function getChannelOrder(element) {
+    const value = getValue(element, "R,G,B");
+
+    return normalizeChannelOrder(value);
+  }
+
+  /**
+   * Normalizes a channel order represented as a string or array.
+   *
+   * @param {string|string[]} value
+   * @returns {string[]}
+   */
+  function normalizeChannelOrder(value) {
+    if (Array.isArray(value)) {
+      return value.map((channel) => String(channel).trim());
+    }
+
+    if (typeof value === "string") {
+      return value.split(",").map((channel) => channel.trim());
+    }
+
+    return ["R", "G", "B"];
+  }
+
+  /**
    * Returns whether real-time preview is enabled.
    *
    * @returns {boolean}
    */
   function getRealtimePreview() {
-    return elements.realtimePreview ? elements.realtimePreview.checked : false;
+    return editorMode === "image" && elements.realtimePreview
+      ? elements.realtimePreview.checked
+      : false;
   }
 
   /**
@@ -206,10 +369,10 @@ export function createControls(root, { palettes = [] } = {}) {
   }
 
   /**
-   * Registers a listener for changes to any available control.
+   * Registers a listener for changes to available controls.
    *
-   * @param {Function} listener - Callback invoked when a control changes.
-   * @returns {Function} Cleanup function that removes the listeners.
+   * @param {Function} listener
+   * @returns {Function} Cleanup function.
    * @throws {TypeError} If listener is not a function.
    */
   function onChange(listener) {
@@ -220,13 +383,15 @@ export function createControls(root, { palettes = [] } = {}) {
     const cleanups = [];
 
     for (const element of Object.values(elements)) {
-      if (!element) {
+      if (!element || typeof element.addEventListener !== "function") {
         continue;
       }
 
       element.addEventListener("change", listener);
 
-      cleanups.push(() => element.removeEventListener("change", listener));
+      cleanups.push(() => {
+        element.removeEventListener("change", listener);
+      });
     }
 
     return () => {
@@ -276,16 +441,13 @@ function populatePaletteSelect(select, palettes) {
     select.appendChild(group);
   }
 
-  // Select the first available palette by default.
   if (select.options.length > 0) {
     select.selectedIndex = 0;
   }
 }
 
 /**
- * Groups palette definitions by their category.
- *
- * Palettes without an explicit category are assigned to "other".
+ * Groups palette definitions by category.
  *
  * @param {Array<Object>} palettes
  * @returns {Map<string, Array<Object>>}
@@ -350,7 +512,7 @@ function formatCategoryName(category) {
 }
 
 /**
- * Returns an element's value or a fallback when it is missing or empty.
+ * Returns an element's value or a fallback when missing or empty.
  *
  * @param {HTMLInputElement|HTMLSelectElement|null} element
  * @param {*} fallback
@@ -407,7 +569,7 @@ function getNumber(element, fallback) {
 }
 
 /**
- * Updates a form control when both the element and value are available.
+ * Updates a form control when both element and value are available.
  *
  * @param {HTMLInputElement|HTMLSelectElement|null} element
  * @param {*} value

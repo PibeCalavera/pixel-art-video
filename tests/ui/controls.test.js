@@ -10,14 +10,14 @@ class MockHTMLElement {
     this.value = "";
     this.checked = false;
     this.type = "";
+    this.hidden = false;
+    this.disabled = false;
   }
 
   setAttribute(name, value) {
     this.attributes[name] = String(value);
 
-    if (name === "type") {
-      this.type = String(value);
-    }
+    if (name === "type") this.type = String(value);
   }
 
   getAttribute(name) {
@@ -29,19 +29,28 @@ class MockHTMLElement {
   }
 
   querySelector(selector) {
-    const match = selector.match(/^\[data-control="(.+)"\]$/);
+    const controlMatch = selector.match(/^\[data-control="(.+)"\]$/);
 
-    if (!match) {
-      return null;
+    if (controlMatch) {
+      return (
+        this.children.find(
+          (element) => element.getAttribute("data-control") === controlMatch[1],
+        ) ?? null
+      );
     }
 
-    const controlName = match[1];
+    const groupMatch = selector.match(/^\[data-resize-(scale|exact)-group\]$/);
 
-    return (
-      this.children.find(
-        (element) => element.getAttribute("data-control") === controlName,
-      ) ?? null
-    );
+    if (groupMatch) {
+      return (
+        this.children.find(
+          (element) =>
+            element.getAttribute(`data-resize-${groupMatch[1]}-group`) !== null,
+        ) ?? null
+      );
+    }
+
+    return null;
   }
 
   addEventListener(type, listener) {
@@ -57,13 +66,7 @@ class MockHTMLElement {
   }
 
   dispatchEvent(event) {
-    const listeners = this.listeners.get(event.type);
-
-    if (!listeners) {
-      return;
-    }
-
-    for (const listener of listeners) {
+    for (const listener of this.listeners.get(event.type) ?? []) {
       listener(event);
     }
   }
@@ -90,6 +93,16 @@ function createControlsRoot() {
 
   const resizeAlgorithm = createElement({ "data-control": "resize-algorithm" });
 
+  const resizeMode = createElement({ "data-control": "resize-mode" });
+  resizeMode.value = "scale";
+
+  const resizeScale = createElement({ "data-control": "resize-scale" });
+  resizeScale.value = "1";
+
+  const resizeScaleGroup = createElement({ "data-resize-scale-group": "" });
+
+  const resizeExactGroup = createElement({ "data-resize-exact-group": "" });
+
   const targetWidth = createElement({ "data-control": "target-width" });
 
   const targetHeight = createElement({ "data-control": "target-height" });
@@ -109,6 +122,10 @@ function createControlsRoot() {
 
   root.append(
     resizeAlgorithm,
+    resizeMode,
+    resizeScale,
+    resizeScaleGroup,
+    resizeExactGroup,
     targetWidth,
     targetHeight,
     quantizationAlgorithm,
@@ -120,6 +137,10 @@ function createControlsRoot() {
   return {
     root,
     resizeAlgorithm,
+    resizeMode,
+    resizeScale,
+    resizeScaleGroup,
+    resizeExactGroup,
     targetWidth,
     targetHeight,
     quantizationAlgorithm,
@@ -147,22 +168,34 @@ describe("controls", () => {
 
   test("reads default options when controls are empty", () => {
     expect(controls.getOptions()).toEqual({
-      resize: { algorithm: "nearest", width: null, height: null },
+      resize: {
+        algorithm: "nearest",
+        mode: "scale",
+        scale: 1,
+        width: null,
+        height: null,
+      },
       quantize: { algorithm: "nearest", palette: null },
       dither: { algorithm: "none", strength: 1, matrixSize: 4, palette: null },
     });
   });
 
-  test("reads values from the controls", () => {
+  test("reads values from scale controls", () => {
     elements.resizeAlgorithm.value = "nearest";
-    elements.targetWidth.value = "64";
-    elements.targetHeight.value = "32";
+    elements.resizeMode.value = "scale";
+    elements.resizeScale.value = "2";
     elements.quantizationAlgorithm.value = "nearest";
     elements.ditherAlgorithm.value = "bayer";
     elements.ditherStrength.value = "0.5";
 
     expect(controls.getOptions()).toEqual({
-      resize: { algorithm: "nearest", width: 64, height: 32 },
+      resize: {
+        algorithm: "nearest",
+        mode: "scale",
+        scale: 2,
+        width: null,
+        height: null,
+      },
       quantize: { algorithm: "nearest", palette: null },
       dither: {
         algorithm: "bayer",
@@ -173,19 +206,75 @@ describe("controls", () => {
     });
   });
 
+  test("reads values from exact dimensions controls", () => {
+    elements.resizeMode.value = "exact";
+    elements.targetWidth.value = "64";
+    elements.targetHeight.value = "32";
+
+    expect(controls.getOptions().resize).toEqual({
+      algorithm: "nearest",
+      mode: "exact",
+      scale: 1,
+      width: 64,
+      height: 32,
+    });
+  });
+
   test("sets processing options on the controls", () => {
     controls.setOptions({
-      resize: { algorithm: "nearest", width: 128, height: 96 },
+      resize: { algorithm: "nearest", mode: "exact", width: 128, height: 96 },
       quantize: { algorithm: "nearest" },
       dither: { algorithm: "floyd-steinberg", strength: 0.75 },
     });
 
     expect(elements.resizeAlgorithm.value).toBe("nearest");
+    expect(elements.resizeMode.value).toBe("exact");
     expect(elements.targetWidth.value).toBe("128");
     expect(elements.targetHeight.value).toBe("96");
     expect(elements.quantizationAlgorithm.value).toBe("nearest");
     expect(elements.ditherAlgorithm.value).toBe("floyd-steinberg");
     expect(elements.ditherStrength.value).toBe("0.75");
+  });
+
+  test("restores scale mode and scale value", () => {
+    controls.setOptions({ resize: { mode: "scale", scale: 0.5 } });
+
+    expect(elements.resizeMode.value).toBe("scale");
+    expect(elements.resizeScale.value).toBe("0.5");
+    expect(elements.resizeScale.disabled).toBe(false);
+    expect(elements.targetWidth.disabled).toBe(true);
+    expect(elements.targetHeight.disabled).toBe(true);
+  });
+
+  test("infers exact mode from legacy dimensions", () => {
+    controls.setOptions({ resize: { width: 64, height: 32 } });
+
+    expect(elements.resizeMode.value).toBe("exact");
+    expect(elements.targetWidth.value).toBe("64");
+    expect(elements.targetHeight.value).toBe("32");
+  });
+
+  test("updates visibility and disabled controls when resize mode changes", () => {
+    expect(elements.resizeScaleGroup.hidden).toBe(false);
+    expect(elements.resizeExactGroup.hidden).toBe(true);
+
+    elements.resizeMode.value = "exact";
+    elements.resizeMode.dispatchEvent({ type: "change" });
+
+    expect(elements.resizeScaleGroup.hidden).toBe(true);
+    expect(elements.resizeExactGroup.hidden).toBe(false);
+    expect(elements.resizeScale.disabled).toBe(true);
+    expect(elements.targetWidth.disabled).toBe(false);
+    expect(elements.targetHeight.disabled).toBe(false);
+
+    elements.resizeMode.value = "scale";
+    elements.resizeMode.dispatchEvent({ type: "change" });
+
+    expect(elements.resizeScaleGroup.hidden).toBe(false);
+    expect(elements.resizeExactGroup.hidden).toBe(true);
+    expect(elements.resizeScale.disabled).toBe(false);
+    expect(elements.targetWidth.disabled).toBe(true);
+    expect(elements.targetHeight.disabled).toBe(true);
   });
 
   test("updates only the options provided", () => {
@@ -203,17 +292,14 @@ describe("controls", () => {
 
   test("sets realtime preview", () => {
     controls.setRealtimePreview(false);
-
     expect(elements.realtimePreview.checked).toBe(false);
 
     controls.setRealtimePreview(true);
-
     expect(elements.realtimePreview.checked).toBe(true);
   });
 
   test("notifies when a control changes", () => {
     const listener = vi.fn();
-
     const unsubscribe = controls.onChange(listener);
 
     elements.targetWidth.dispatchEvent({ type: "change" });
@@ -221,13 +307,13 @@ describe("controls", () => {
     expect(listener).toHaveBeenCalledTimes(1);
 
     unsubscribe();
-
     elements.targetWidth.dispatchEvent({ type: "change" });
 
     expect(listener).toHaveBeenCalledTimes(1);
   });
 
-  test("returns null for empty target dimensions", () => {
+  test("returns null for empty target dimensions in exact mode", () => {
+    elements.resizeMode.value = "exact";
     elements.targetWidth.value = "";
     elements.targetHeight.value = "";
 
@@ -238,6 +324,7 @@ describe("controls", () => {
   });
 
   test("rejects invalid dimensions by using null", () => {
+    elements.resizeMode.value = "exact";
     elements.targetWidth.value = "-10";
     elements.targetHeight.value = "abc";
 

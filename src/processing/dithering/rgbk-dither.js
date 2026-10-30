@@ -1,27 +1,34 @@
 import { ImageDataBuffer } from "../image.js";
 
 /**
- * Defines the valid subpixel configurations for the RGBK dithering algorithm.
+ * Valid 2x2 subpixel configurations.
  *
- * Each configuration represents a 2x2 output block using binary flags in the
- * following order: top-left (R), top-right (G), bottom-left (B1), and
- * bottom-right (B2). A value of `1` activates the corresponding color subpixel;
- * a value of `0` renders that position as black.
+ * Flag order:
+ * 0: top-left (R)
+ * 1: top-right (B)
+ * 2: bottom-left (G)
+ * 3: bottom-right (G)
  *
- * Only configurations permitted by the algorithm's subpixel placement rules
- * are included.
+ * A value of 1 activates the corresponding subpixel.
+ * A value of 0 renders it as black.
  */
 const COMBINATIONS = [
   [0, 0, 0, 0], // KKKK
-  [0, 0, 1, 0], // KKBK
+  [0, 0, 1, 0], // KKGK
+  [0, 0, 0, 1], // KKKG
+  [0, 0, 1, 1], // KKGG
   [1, 0, 0, 0], // RKKK
-  [1, 0, 1, 0], // RKBK
-  [0, 1, 0, 0], // KGKK
-  [0, 1, 0, 1], // KGKB
-  [1, 1, 0, 0], // RGKK
-  [1, 1, 1, 0], // RGBK
-  [1, 1, 0, 1], // RGKB
-  [1, 1, 1, 1], // RGBB
+  [1, 0, 1, 0], // RKGK
+  [1, 0, 0, 1], // RKKG
+  [1, 0, 1, 1], // RKGG
+  [0, 1, 0, 0], // KBKK
+  [0, 1, 1, 0], // KBGK
+  [0, 1, 0, 1], // KBKG
+  [0, 1, 1, 1], // KBGG
+  [1, 1, 0, 0], // RBKK
+  [1, 1, 1, 0], // RBGK
+  [1, 1, 0, 1], // RBKG
+  [1, 1, 1, 1], // RBGG
 ];
 
 /** RGB channel values for the output subpixel colors. */
@@ -43,7 +50,7 @@ const TRANSPARENT_ALPHA = 0;
  * Maps each subpixel position to its corresponding RGB color.
  * The order must match the flag order used by `COMBINATIONS`.
  */
-const SUBPIXEL_COLORS = [RED, GREEN, BLUE, BLUE];
+const SUBPIXEL_COLORS = [RED, BLUE, GREEN, GREEN];
 
 /**
  * Converts an image into a 2x-resolution RGBK subpixel representation.
@@ -112,13 +119,13 @@ export function ditherRetroRGBK(image) {
       // Every subpixel belonging to the figure is fully opaque,
       // including black subpixels.
       writePixel(output, outputX, outputY, combination[0] ? RED : BLACK);
-      writePixel(output, outputX + 1, outputY, combination[1] ? GREEN : BLACK);
-      writePixel(output, outputX, outputY + 1, combination[2] ? BLUE : BLACK);
+      writePixel(output, outputX + 1, outputY, combination[1] ? BLUE : BLACK);
+      writePixel(output, outputX, outputY + 1, combination[2] ? GREEN : BLACK);
       writePixel(
         output,
         outputX + 1,
         outputY + 1,
-        combination[3] ? BLUE : BLACK,
+        combination[3] ? GREEN : BLACK,
       );
     }
   }
