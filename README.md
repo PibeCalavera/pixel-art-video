@@ -1,15 +1,18 @@
-# Pixel Art Web
+# Pixel Art Video
 
-A browser-based image and video processing tool created as a personal project to
-experiment with image-processing techniques and generate visual references for
-pixel art.
+**Pixel Art Video** is a browser-based tool for creating pixel art references
+from images and videos. It provides image resizing, color quantization, palette
+management, and several dithering algorithms, as well as video processing with
+audio support and video export.
 
-The main goal is not to create pixel art directly, but to transform images and
-videos into simplified, stylized versions that can be used as visual references
-when creating pixel art.
+## Based on Pixel Art Web
 
-The application supports both still images and video, with a selection of
-dithering algorithms, custom color-processing techniques, and export options.
+This project is based on
+[Pixel Art Web](https://github.com/PibeCalavera/pixel-art-web/), the original
+project that served as the foundation for its development. Pixel Art Video
+builds upon that work, preserving its image-processing functionality while
+introducing video processing, audio support, and an additional dithering
+algorithm.
 
 ## Features
 
